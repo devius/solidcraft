@@ -4059,7 +4059,7 @@
   "thread.drill_range": "ხრახნის მწარმოებლის ბურღი {drill} mm-ია. შიდა კუთხვილის სტანდარტული შიდა დიამეტრი {minor} mm-ია. მიიღება ბურღი {low}-დან {high} mm-მდე.",
   "thread.drill_range_custom": "ბურღი არის გარე დიამეტრს გამოკლებული ბიჯი, {drill} mm. შიდა კუთხვილის სტანდარტული შიდა დიამეტრი {minor} mm-ია. მიიღება ბურღი {low}-დან {high} mm-მდე.",
   "thread.drill_range_taper": "ხრახნის მწარმოებლის ბურღი {drill} mm-ია. სტანდარტის შიდა დიამეტრი კუთხვილის ბოლოში {minor} mm-ია. მიიღება ბურღი {low}-დან {high} mm-მდე.",
-  "thread.end_square": "სწორი",
+  "thread.end_square": "მართი",
   "thread.fade_short": "1.25 P (ISO 3508)",
   "thread.fade_standard": "2.5 P (ISO 3508)",
   "thread.fits_the_face": "წახნაგს ერგება, მაგ. {example}",
