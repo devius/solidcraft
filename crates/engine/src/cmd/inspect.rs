@@ -13,17 +13,18 @@ use super::CommandSpec;
 use crate::params::{bad, bool_, str_, string_list};
 use crate::schema::inspect::{BodiesDetail, DocumentBodies, TimelineDetail, TimelineRow};
 use crate::schema::inspect::{
-    BodyFailure, BodyFeaturesParams, BodyFigures, BodyListParams, BodyMeasurement, BodyName, BodyNames, BodyOutcome, BoundingBox, CommandEntry,
-    CommandsParams, CurveShape, DocumentBody, DocumentBodyDetail, DocumentInspectParams, DocumentInspectResult, DocumentParam,
-    DocumentRevisionParams, DocumentSketch, FaceCylinder, KernelCounts, ListedMaterial, MaterialAssignParams, MaterialAssignResult,
-    MaterialListParams, MaterialListResult, MeasureParams, MeasureResult, MeasureTotal, Measured, MeasuredBodies, MeasuredBody, ModelBodyFeatures,
-    ModelEdge, ModelEdges, ModelFace, ModelFaces, ModelThread, ModelThreads, ModelThreadsParams, PointFixedBy, RevisionResult, SketchConstraint,
-    SketchCurve, SketchInspectParams, SketchInspected, SketchPoint, SketchProfile, SketchWire, SplineTangentHandle, TimelineEntry, TimelineSummary,
-    WireArcInfo,
+    BodyFailure, BodyFeaturesParams, BodyFigures, BodyListParams, BodyMeasurement, BodyName, BodyNames, BodyOutcome, BoundingBox,
+    ColoredComponentsParams, ColoredComponentsResult, CommandEntry, CommandsParams, CurveShape, DocumentBody, DocumentBodyDetail,
+    DocumentInspectParams, DocumentInspectResult, DocumentParam, DocumentRevisionParams, DocumentSketch, FaceCylinder, KernelCounts, ListedMaterial,
+    MaterialAssignParams, MaterialAssignResult, MaterialListParams, MaterialListResult, MeasureParams, MeasureResult, MeasureTotal, Measured,
+    MeasuredBodies, MeasuredBody, ModelBodyFeatures, ModelEdge, ModelEdges, ModelFace, ModelFaces, ModelThread, ModelThreads, ModelThreadsParams,
+    PointFixedBy, RevisionResult, SketchConstraint, SketchCurve, SketchInspectParams, SketchInspected, SketchPoint, SketchProfile, SketchWire,
+    SplineTangentHandle, TimelineEntry, TimelineSummary, WireArcInfo,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
 
+const COLORED_COMPONENTS_CONTRACT: TypedContract<ColoredComponentsParams> = TypedContract::new();
 const BODY_LIST_CONTRACT: TypedContract<BodyListParams> = TypedContract::new();
 const THREADS_CONTRACT: TypedContract<ModelThreadsParams> = TypedContract::new();
 const BODY_FEATURES_CONTRACT: TypedContract<BodyFeaturesParams> = TypedContract::new();
@@ -45,8 +46,12 @@ pub(super) mod appearance_gestures;
 mod body_features;
 
 pub static COMMANDS: &[CommandSpec] = &[
-    CommandSpec::new("inspect.colored_components", "Component Colors", colored_components)
-        .at("SOLID", "INSPECT").icon("colored_components").noundo()
+    CommandSpec::new("inspect.colored_components", "Component Colors", crate::checked!("inspect.colored_components", colored_components))
+        .at("SOLID", "INSPECT")
+        .icon("colored_components")
+        .noundo()
+        .contract(&COLORED_COMPONENTS_CONTRACT)
+        .output(output_schema_for::<ColoredComponentsResult>)
         .params("enabled?: bool (omitted: toggle); temporary component colours, without changing appearances"),
     CommandSpec::new("inspect.measure", "Measure", crate::checked!("inspect.measure", measure))
         .at("SOLID", "INSPECT")
@@ -131,7 +136,8 @@ pub static COMMANDS: &[CommandSpec] = &[
              appearance?: library name or stable starter.* ID (appearance.library) | color: \"#rrggbb\" or [r, g, b] (0–255), opacity? (0–1, default 1); \
              name?: inert copied look label (requires color, mutually exclusive with appearance); pbr?: {metallic:0..1, roughness:0.045..1, dielectric_ior:1..3} (requires color/appearance and opacity 1); a starter ID or registered starter name resolves its recipe before color overrides; omitted pbr retains that response and pbr: null explicitly clears it. Unavailable glass recipes refuse through either selector. Other custom labels with an explicit color retain legacy scalar behavior. Neither appearance nor color (or color: null): clear, so the face follows its body, the body its component, the component its material",
     ),
-    CommandSpec::new("appearance.copy", "Copy Look", appearance_gestures::copy).icon("copy").noundo().key("Ctrl+Alt+C")
+    CommandSpec::new("appearance.copy", "Copy Look", crate::checked!("appearance.copy", appearance_gestures::copy)).icon("copy").noundo().key("Ctrl+Alt+C")
+        .contract(&COPY_CONTRACT).output(crate::schema::output_schema_for::<AppearanceCopyResult>)
         .params("target: appearance.chain target. Copies its resolved look to a transient session clipboard. No document change or dialogs."),
     CommandSpec::new("appearance.paste", "Paste Look", appearance_gestures::paste).icon("paste").key("Ctrl+Alt+V")
         .params("bodies/faces/components: appearance.assign targets. Applies the copied look atomically in one undo step; no dialogs."),
@@ -292,17 +298,7 @@ fn measure(s: &mut Session, p: &Value) -> Result<Value> {
             b.density_g_cm3 = Some(rho);
             b.mass_g = Some(v * rho / 1000.0);
         }
-        // Only Measure exposes sheet boundary counts; document.inspect keeps kernel counts.
-        if let Some(sheet) = definitions.sheets.iter().find(|sheet| sheet.body == source) {
-            let (df, de, dv) = sheet.round_hole_correction();
-            match &mut b.measurement.outcome {
-                BodyOutcome::Measured(f) => {
-                    f.faces = count(f.kernel.faces) + df;
-                    f.edges = count(f.kernel.edges) + de;
-                    f.vertices = count(f.kernel.vertices) + dv;
-                }
-                BodyOutcome::Failed(x) => (x.faces, x.edges, x.vertices) = (Some(df), Some(de), Some(dv)),
-            }
+        if definitions.sheets.iter().any(|sheet| sheet.body == source) {
             b.sheet_metal = Some(true);
         }
         bodies.push(b);
@@ -496,9 +492,31 @@ fn sketch_json(s: &Session, world: &solidcraft_doc::ModelState, id: u64) -> Opti
         name: ss.name.clone(),
         plane: serde_json::to_value(ss.plane).unwrap_or_default(),
         status: ss.report.status.into(),
-        dof: ss.report.dof,
-        fully_constrained: ss.report.fully_constrained(),
+        dof: ss.report.shown_dof(),
+        fully_constrained: ss.report.shown_dof() == 0,
+        planar_dof: ss.report.dof,
         failing: ss.report.failing.clone(),
+        // The 3D constraints' solve (#10608): its freedoms are in `dof`, its failures here.
+        wires_solve: serde_json::to_value(&ss.report.wires).unwrap_or_default(),
+        // As the planar constraints are listed: a dimension's parameter expression, and an angle in
+        // degrees beside the stored radians.
+        wire_constraints: Value::Array(
+            sk.wire_constraints
+                .iter()
+                .map(|c| {
+                    let mut v = serde_json::to_value(c).unwrap_or_default();
+                    if let Some(o) = v.as_object_mut() {
+                        if let Some(p) = &c.param {
+                            o.insert("expression".into(), json!(s.doc.param(p).map(|x| x.expr.clone())));
+                        }
+                        if let (true, Some(value)) = (c.kind.is_angle(), c.kind.value()) {
+                            o.insert("degrees".into(), json!(value.to_degrees()));
+                        }
+                    }
+                    v
+                })
+                .collect(),
+        ),
         curves,
         points,
         constraints,
@@ -657,8 +675,9 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
             let mut v = DocumentSketch {
                 id: ss.feature,
                 name: ss.name.clone(),
-                dof: ss.report.dof,
+                dof: ss.report.shown_dof(),
                 status: ss.report.status.into(),
+                wires_ok: ss.report.wires_ok(),
                 curves: ss.sketch.curves.len(),
                 profiles: ss.profiles.len(),
                 visible: crate::view::sketch_shown(s, ss.feature),
@@ -852,14 +871,15 @@ pub(crate) fn color_param(v: &Value) -> Option<[u8; 3]> {
 }
 
 use crate::schema::appearance::{
-    AppearanceAssignParams, AppearanceAssignResult, AppearanceLibraryParams, AppearanceLibraryResult, AppearanceListParams, AppearanceListResult,
-    BodyLooks, ComponentLookReply, FaceIndexLook, FaceLookReply, FaceSpot, LibraryAppearance, LookInDesign, LookReply, PbrReply, PlainAppearance,
-    StarterAppearance,
+    AppearanceAssignParams, AppearanceAssignResult, AppearanceCopyParams, AppearanceCopyResult, AppearanceLibraryParams, AppearanceLibraryResult,
+    AppearanceListParams, AppearanceListResult, BodyLooks, ComponentLookReply, FaceIndexLook, FaceLookReply, FaceSpot, LibraryAppearance,
+    LookInDesign, LookReply, PbrReply, PlainAppearance, StarterAppearance,
 };
 
 const ASSIGN_CONTRACT: TypedContract<AppearanceAssignParams> = TypedContract::new();
 const LIBRARY_CONTRACT: TypedContract<AppearanceLibraryParams> = TypedContract::new();
 const LIST_CONTRACT: TypedContract<AppearanceListParams> = TypedContract::new();
+const COPY_CONTRACT: TypedContract<AppearanceCopyParams> = TypedContract::new();
 
 /// An appearance command's reply, built from its schema's type so the two can't drift apart.
 fn appearance_reply(cmd: &str, r: impl serde::Serialize) -> Result<Value> {
@@ -1204,5 +1224,5 @@ fn colored_components(s: &mut Session, p: &Value) -> Result<Value> {
     } else if !enabled {
         s.colored_components = None;
     }
-    Ok(json!({"enabled": enabled}))
+    typed_reply("inspect.colored_components", ColoredComponentsResult { enabled, param_warnings: Vec::new() })
 }
